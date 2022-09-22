@@ -3,7 +3,7 @@ terraform {
     hostname     = "app.terraform.io"
     organization = "aucnet-dev"
     workspaces {
-      name = "hello-tf"
+      name = "hello-tfcb-vcs"
     }
   }
 }
@@ -18,7 +18,6 @@ resource "aws_vpc" "hashicat" {
   cidr_block           = var.address_space
   enable_dns_hostnames = true
 }
-
 resource "aws_subnet" "hashicat" {
   vpc_id     = aws_vpc.hashicat.id
   cidr_block = var.subnet_prefix
@@ -26,6 +25,7 @@ resource "aws_subnet" "hashicat" {
 
 resource "aws_instance" "hashicat" {
   ami                         = var.ami
+  key_name                    = aws_key_pair.hashicat.key_name
   instance_type               = var.hello_tf_instance_type
   subnet_id                   = aws_subnet.hashicat.id
   associate_public_ip_address = true
@@ -44,6 +44,13 @@ resource "aws_security_group" "hashicat" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   egress {
     from_port       = 0
     to_port         = 0
@@ -52,6 +59,7 @@ resource "aws_security_group" "hashicat" {
     prefix_list_ids = []
   }
 }
+
 resource "aws_internet_gateway" "hashicat" {
   vpc_id = aws_vpc.hashicat.id
 }
@@ -78,4 +86,47 @@ resource "aws_eip" "hashicat" {
 resource "aws_eip_association" "hashicat" {
   instance_id   = aws_instance.hashicat.id
   allocation_id = aws_eip.hashicat.id
+}
+
+resource "null_resource" "configure-cat-app" {
+  depends_on = [aws_eip_association.hashicat]
+
+  triggers = {
+    build_number = timestamp()
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "sudo apt -y update",
+      "sleep 15",
+      "sudo apt -y update",
+      "sudo apt -y install apache2",
+      "sudo systemctl start apache2",
+      "sudo chown -R ubuntu:ubuntu /var/www/html",
+    ]
+
+    connection {
+      type        = "ssh"
+      user        = "ubuntu"
+      private_key = tls_private_key.hashicat.private_key_pem
+      host        = aws_eip.hashicat.public_ip
+    }
+  }
+}
+
+resource "tls_private_key" "hashicat" {
+  algorithm = "RSA"
+}
+
+locals {
+  private_key_filename = "${random_string.default.result}ssh-key.pem"
+}
+
+resource "aws_key_pair" "hashicat" {
+  key_name   = local.private_key_filename
+  public_key = tls_private_key.hashicat.public_key_openssh
+}
+
+resource "random_string" "default" {
+  length = 16
 }
